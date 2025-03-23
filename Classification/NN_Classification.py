@@ -3,6 +3,15 @@ from activation_functions import *
 
 xp = get_array_module()
 
+ACTIVATIONS = {
+    "sigmoid": (sigmoid, sigmoid_derivative),
+    "relu": (relu, relu_derivative),
+    "leaky_relu": (leaky_relu, leaky_relu_derivative),
+    "tanh": (tanh, tanh_derivative),
+    "softmax": (softmax, None),
+    "linear": (linear, linear_derivative)
+}
+
 class NeuralNetworkClassifier:
 
     def __init__(
@@ -82,23 +91,12 @@ class NeuralNetworkClassifier:
     def _exponential_decay(self, current_epoch: int) -> float:
         return self.learning_rate * (self.decay_rate ** (current_epoch / self.decay_step))
 
-    def _get_activation_functions(self, activation_name: str = 'sigmoid') -> tuple:
+    def _get_activation_functions(self, activation_name: str = "sigmoid") -> tuple:
 
-        match activation_name:
-            case 'sigmoid':
-                return sigmoid, sigmoid_derivative
-            case 'relu':
-                return relu, relu_derivative
-            case 'leaky_relu':
-                return leaky_relu, leaky_relu_derivative
-            case 'tanh':
-                return tanh, tanh_derivative
-            case 'softmax':
-                return softmax, None
-            case 'linear':
-                return linear, linear_derivative
-            case _:
-                raise ValueError(f"Unsupported activation function: {activation_name}")
+        if activation_name not in ACTIVATIONS:
+            raise ValueError(f"Unsupported activation function: {activation_name}")
+
+        return ACTIVATIONS[activation_name]
 
     def _forward_propagation(self, X:ArrayType) -> tuple:
 
@@ -216,6 +214,10 @@ class NeuralNetworkClassifier:
     def predict(self, X:ArrayType) ->ArrayType:
 
         X = self.xp.asarray(X)
+
+        if X.shape[1] != self.layer_dims[0]:
+            raise ValueError(f"Expected input with {self.layer_dims[0]} features, but got {X.shape[1]}.")
+
         probabilities = self._forward_propagation(X)
         predictions = self.xp.argmax(probabilities, axis=1)
         return predictions if self.xp is np else cp.asnumpy(predictions)
@@ -223,11 +225,7 @@ class NeuralNetworkClassifier:
     def save(self, filename: str = "model_state.pkl") -> None:
         """Save the model state to a file."""
 
-        state = self.__dict__.copy()
-
-        if 'xp' in state:
-            del state['xp']
-
+        state = {k: v for k, v in self.__dict__.items() if k not in ["xp", "cache"]}
         with open(filename, "wb") as f:
             pickle.dump(state, f)
 
