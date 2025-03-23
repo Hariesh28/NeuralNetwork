@@ -1,3 +1,4 @@
+import pickle
 from activation_functions import *
 
 xp = get_array_module()
@@ -218,3 +219,41 @@ class NeuralNetworkClassifier:
         probabilities = self._forward_propagation(X)
         predictions = self.xp.argmax(probabilities, axis=1)
         return predictions if self.xp is np else cp.asnumpy(predictions)
+
+    def save(self, filename: str = "model_state.pkl") -> None:
+        """Save the model state to a file."""
+
+        state = self.__dict__.copy()
+
+        if 'xp' in state:
+            del state['xp']
+
+        with open(filename, "wb") as f:
+            pickle.dump(state, f)
+
+    @classmethod
+    def load(cls, filename: str):
+        """Load the model state from a file and reinitialize unpicklable attributes."""
+
+        with open(filename, "rb") as f:
+            state = pickle.load(f)
+
+        # Create an instance without calling __init__
+        obj = cls.__new__(cls)
+        obj.__dict__.update(state)
+
+        # Reinitialize the xp attribute based on use_gpu flag
+        if obj.use_gpu:
+            try:
+                if cp.cuda.is_available():
+                    obj.xp = cp
+                else:
+                    obj.xp = np
+            except Exception:
+                obj.xp = np
+        else:
+            obj.xp = np
+
+        # Update the activation functions to use the same backend
+        set_array_module(obj.xp)
+        return obj
