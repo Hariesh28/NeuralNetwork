@@ -1,5 +1,5 @@
 numpy
-cupy
+cupy-cuda12x
 pandas
 matplotlib
 scikit-learn
