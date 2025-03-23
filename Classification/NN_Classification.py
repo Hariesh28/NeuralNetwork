@@ -1,4 +1,5 @@
 import pickle
+import time
 from activation_functions import *
 
 xp = get_array_module()
@@ -29,7 +30,7 @@ class NeuralNetworkClassifier:
         seed: int = 42
     ):
         self.layer_dims = layer_dims
-        self.activations = activations
+        self.activations = activations if activations is not None else ["relu"]*(len(layer_dims)-2) + ["softmax"]
         self.epoch = epoch
         self.batch_size = batch_size
         self.max_norm = max_norm
@@ -97,6 +98,10 @@ class NeuralNetworkClassifier:
             raise ValueError(f"Unsupported activation function: {activation_name}")
 
         return ACTIVATIONS[activation_name]
+
+    def _to_numpy(self, arr):
+        return np.array([x.get() if hasattr(x, "get") else x for x in arr], dtype=np.float64)
+
 
     def _forward_propagation(self, X:ArrayType) -> tuple:
 
@@ -171,6 +176,12 @@ class NeuralNetworkClassifier:
 
     def fit(self, X:ArrayType, y:ArrayType) -> None:
 
+        epoch_list = []
+        train_loss_list = []
+        train_acc_list = []
+        lr_list = []
+        epoch_time_list = []
+
         try:
             if self.xp.cuda.is_available():
                 print("Using GPU")
@@ -190,7 +201,9 @@ class NeuralNetworkClassifier:
 
         for epoch in range(1, self.epoch + 1):
 
+            start_time = time.time()
             current_lr = self._exponential_decay(epoch)
+            lr_list.append(current_lr)
 
             permutation = self.xp.asarray(self.xp.random.permutation(m), dtype=self.xp.intp)
             X_shuffled = X[permutation]
@@ -206,10 +219,31 @@ class NeuralNetworkClassifier:
 
                 self._backward_propagation(y_batch, lr=current_lr)
 
-            if epoch % 10 == 0 and self.verbose:
-                print(f"Epoch {epoch}/{self.epoch}, Cost: {cost}", end='\r')
+            y_train_pred = self._forward_propagation(X)
+            train_loss = self._cost(y, y_train_pred)
+            train_loss_list.append(train_loss)
 
-        print(' '*100, end='\r')
+            predictions = self.xp.argmax(y_train_pred, axis=1)
+            true_labels = self.xp.argmax(y, axis=1)
+            train_accuracy = self.xp.mean(predictions == true_labels)
+            train_acc_list.append(train_accuracy)
+
+            epoch_list.append(epoch)
+            epoch_duration = time.time() - start_time
+            epoch_time_list.append(epoch_duration)
+
+            if self.verbose:
+                print(f"Epoch {epoch}/{self.epoch} - Loss: {train_loss:.4f} - Acc: {train_accuracy:.4f} "
+                      f"- LR: {current_lr:.6f} "
+                      f"- Time: {epoch_duration:.2f}s")
+
+        self.data = {
+        "epochs": np.array(epoch_list, dtype=np.float64),
+        "train_loss": self._to_numpy(train_loss_list),
+        "train_accuracy": self._to_numpy(train_acc_list),
+        "learning_rate": self._to_numpy(lr_list),
+        "epoch_duration": np.array(epoch_time_list, dtype=np.float64)
+    }
 
     def predict(self, X:ArrayType) ->ArrayType:
 
@@ -222,10 +256,23 @@ class NeuralNetworkClassifier:
         predictions = self.xp.argmax(probabilities, axis=1)
         return predictions if self.xp is np else cp.asnumpy(predictions)
 
+    def predict_proba(self, X: ArrayType) -> ArrayType:
+
+        X = self.xp.asarray(X)
+
+        if X.shape[1] != self.layer_dims[0]:
+            raise ValueError(f"Expected input with {self.layer_dims[0]} features, but got {X.shape[1]}.")
+
+        probabilities = self._forward_propagation(X)
+        return probabilities if self.xp is np else cp.asnumpy(probabilities)
+
+    def get_training_data(self) -> dict:
+        return self.data
+
     def save(self, filename: str = "model_state.pkl") -> None:
         """Save the model state to a file."""
 
-        state = {k: v for k, v in self.__dict__.items() if k not in ["xp", "cache"]}
+        state = {k: v for k, v in self.__dict__.items() if k not in ["xp", "cache", "data"]}
         with open(filename, "wb") as f:
             pickle.dump(state, f)
 
