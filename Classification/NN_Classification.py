@@ -1,5 +1,6 @@
-import pickle
 import time
+import pickle
+import matplotlib.pyplot as plt
 from activation_functions import *
 
 xp = get_array_module()
@@ -25,6 +26,7 @@ class NeuralNetworkClassifier:
         learning_rate: float = 0.01,
         decay_rate: float = 0.96,
         decay_step: int = 10,
+        threshold: float = 0.5,
         verbose: int = 0,
         use_gpu: bool = True,
         seed: int = 42
@@ -38,6 +40,7 @@ class NeuralNetworkClassifier:
         self.decay_rate = decay_rate
         self.decay_step = decay_step
         self.use_gpu = use_gpu
+        self.threshold = threshold
         self.verbose = verbose
 
         if self.use_gpu:
@@ -87,7 +90,12 @@ class NeuralNetworkClassifier:
     def _cost(self, y_true: ArrayType, y_pred: ArrayType) -> float:
         m = y_true.shape[0]
         epsilon = 1e-8
-        return -self.xp.sum(y_true * self.xp.log(y_pred + epsilon)) / m
+
+        if self.layer_dims[-1] == 1:
+            return -self.xp.mean(y_true * self.xp.log(y_pred + epsilon) + (1 - y_true) * self.xp.log(1 - y_pred + epsilon))
+
+        else:
+            return -self.xp.sum(y_true * self.xp.log(y_pred + epsilon)) / m
 
     def _exponential_decay(self, current_epoch: int) -> float:
         return self.learning_rate * (self.decay_rate ** (current_epoch / self.decay_step))
@@ -223,8 +231,14 @@ class NeuralNetworkClassifier:
             train_loss = self._cost(y, y_train_pred)
             train_loss_list.append(train_loss)
 
-            predictions = self.xp.argmax(y_train_pred, axis=1)
-            true_labels = self.xp.argmax(y, axis=1)
+            if self.layer_dims[-1] == 1:
+                predictions = (y_train_pred >= self.threshold).astype(int)
+                predictions = predictions.flatten()
+                true_labels = y.flatten().astype(int)
+            else:
+                predictions = self.xp.argmax(y_train_pred, axis=1)
+                true_labels = self.xp.argmax(y, axis=1)
+
             train_accuracy = self.xp.mean(predictions == true_labels)
             train_acc_list.append(train_accuracy)
 
@@ -253,7 +267,12 @@ class NeuralNetworkClassifier:
             raise ValueError(f"Expected input with {self.layer_dims[0]} features, but got {X.shape[1]}.")
 
         probabilities = self._forward_propagation(X)
-        predictions = self.xp.argmax(probabilities, axis=1)
+
+        if self.layer_dims[-1] == 1:
+            predictions = (probabilities >= self.threshold).astype(int)
+        else:
+            predictions = self.xp.argmax(probabilities, axis=1)
+
         return predictions if self.xp is np else cp.asnumpy(predictions)
 
     def predict_proba(self, X: ArrayType) -> ArrayType:
@@ -302,3 +321,50 @@ class NeuralNetworkClassifier:
         # Update the activation functions to use the same backend
         set_array_module(obj.xp)
         return obj
+
+
+    def plot_training_metrics(self):
+
+        # Ensure the training data is available
+        if not hasattr(self, 'data'):
+            raise ValueError("Model has not been trained yet. No data available for plotting.")
+
+        epoch_list = self.data["epochs"]
+        train_loss_list = self.data["train_loss"]
+        train_acc_list = self.data["train_accuracy"]
+        lr_list = self.data["learning_rate"]
+        epoch_time_list = self.data["epoch_duration"]
+
+        # Plotting the training metrics
+        plt.figure(figsize=(12, 8))
+
+        # Training Loss
+        plt.subplot(2, 2, 1)
+        plt.plot(epoch_list, train_loss_list, marker='o')
+        plt.xlabel("Epoch")
+        plt.ylabel("Training Loss")
+        plt.title("Training Loss over Epochs")
+
+        # Training Accuracy
+        plt.subplot(2, 2, 2)
+        plt.plot(epoch_list, train_acc_list, marker='o', color='green')
+        plt.xlabel("Epoch")
+        plt.ylabel("Training Accuracy")
+        plt.title("Training Accuracy over Epochs")
+
+        # Learning Rate
+        plt.subplot(2, 2, 3)
+        plt.plot(epoch_list, lr_list, marker='o', color='red')
+        plt.xlabel("Epoch")
+        plt.ylabel("Learning Rate")
+        plt.title("Learning Rate Decay")
+
+        # Epoch Duration
+        plt.subplot(2, 2, 4)
+        plt.plot(epoch_list, epoch_time_list, marker='o', color='brown')
+        plt.xlabel("Epoch")
+        plt.ylabel("Epoch Time (s)")
+        plt.title("Epoch Duration")
+
+        plt.tight_layout()
+        plt.show()
