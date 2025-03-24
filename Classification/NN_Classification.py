@@ -26,7 +26,10 @@ class NeuralNetworkClassifier:
         learning_rate: float = 0.01,
         decay_rate: float = 0.96,
         decay_step: int = 10,
+        l2_lambda: float = 0.001,
         threshold: float = 0.5,
+        early_stopping: bool = False,
+        patience: int = 5,
         verbose: int = 0,
         use_gpu: bool = True,
         seed: int = 42
@@ -42,6 +45,9 @@ class NeuralNetworkClassifier:
         self.use_gpu = use_gpu
         self.threshold = threshold
         self.verbose = verbose
+        self.early_stopping = early_stopping
+        self.patience = patience
+        self.l2_lambda = l2_lambda
 
         if self.use_gpu:
             try:
@@ -92,10 +98,21 @@ class NeuralNetworkClassifier:
         epsilon = 1e-8
 
         if self.layer_dims[-1] == 1:
-            return -self.xp.mean(y_true * self.xp.log(y_pred + epsilon) + (1 - y_true) * self.xp.log(1 - y_pred + epsilon))
+            cost = -self.xp.mean(
+                y_true * self.xp.log(y_pred + epsilon) +
+                (1 - y_true) * self.xp.log(1 - y_pred + epsilon)
+            )
 
         else:
-            return -self.xp.sum(y_true * self.xp.log(y_pred + epsilon)) / m
+            cost = -self.xp.sum(y_true * self.xp.log(y_pred + epsilon)) / m
+
+        l2_cost = 0
+        L = len(self.layer_dims) - 1
+        for l in range(1, L + 1):
+            l2_cost += self.xp.sum(self.parameters[f'W{l}'] ** 2)
+
+        cost += (self.l2_lambda / (2 * m)) * l2_cost
+        return cost
 
     def _exponential_decay(self, current_epoch: int) -> float:
         return self.learning_rate * (self.decay_rate ** (current_epoch / self.decay_step))
@@ -184,11 +201,9 @@ class NeuralNetworkClassifier:
 
     def fit(self, X:ArrayType, y:ArrayType) -> None:
 
-        epoch_list = []
-        train_loss_list = []
-        train_acc_list = []
-        lr_list = []
-        epoch_time_list = []
+        epoch_list, train_loss_list, train_acc_list, lr_list, epoch_time_list = [], [], [], [], []
+        best_loss = float("inf")
+        no_improve = 0
 
         try:
             if self.xp.cuda.is_available():
@@ -250,6 +265,18 @@ class NeuralNetworkClassifier:
                 print(f"Epoch {epoch}/{self.epoch} - Loss: {train_loss:.4f} - Acc: {train_accuracy:.4f} "
                       f"- LR: {current_lr:.6f} "
                       f"- Time: {epoch_duration:.2f}s")
+
+            # Early stopping check.
+            if self.early_stopping:
+                if train_loss < best_loss:
+                    best_loss = train_loss
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if no_improve >= self.patience:
+                    if self.verbose:
+                        print(f"Early stopping triggered at epoch {epoch}")
+                    break
 
         self.data = {
         "epochs": np.array(epoch_list, dtype=np.float64),
