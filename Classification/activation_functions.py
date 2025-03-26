@@ -24,11 +24,12 @@ def set_array_module(module):
     global xp
     xp = module
 
-def sigmoid(x: ArrayType) -> ArrayType:
-    return 1 / (1 + xp.exp(-x))
+def sigmoid(z: ArrayType) -> ArrayType:
+    return 1 / (1 + xp.exp(-z))
 
-def sigmoid_derivative(x: ArrayType) -> ArrayType:
-    return x * (1 - x)
+def sigmoid_derivative(z: ArrayType) -> ArrayType:
+    a = sigmoid(z)
+    return a * (1 - a)
 
 def relu(z: ArrayType) -> ArrayType:
     return xp.maximum(0, z)

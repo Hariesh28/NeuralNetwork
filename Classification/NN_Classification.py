@@ -26,6 +26,7 @@ class NeuralNetworkClassifier:
         learning_rate: float = 0.01,
         decay_rate: float = 0.96,
         decay_step: int = 10,
+        dropout_prob: float = 0.0,
         l2_lambda: float = 0.001,
         threshold: float = 0.5,
         early_stopping: bool = False,
@@ -48,6 +49,7 @@ class NeuralNetworkClassifier:
         self.early_stopping = early_stopping
         self.patience = patience
         self.l2_lambda = l2_lambda
+        self.dropout_prob = dropout_prob
 
         if self.use_gpu:
             try:
@@ -127,7 +129,6 @@ class NeuralNetworkClassifier:
     def _to_numpy(self, arr):
         return np.array([x.get() if hasattr(x, "get") else x for x in arr], dtype=np.float64)
 
-
     def _forward_propagation(self, X:ArrayType) -> tuple:
 
         cache = {}
@@ -137,7 +138,7 @@ class NeuralNetworkClassifier:
         cache['A0'] = X
 
         for l in range(1, L+1):
-            Z = self.xp.dot(A, self.parameters[f'W{l}']) + self.parameters[f'B{l}']
+            Z = self.xp.dot(cache[f'A{l-1}'], self.parameters[f'W{l}']) + self.parameters[f'B{l}']
 
             activation_func, _ = self._get_activation_functions(self.activations[l-1])
             A = activation_func(Z)
@@ -150,6 +151,7 @@ class NeuralNetworkClassifier:
 
     def _backward_propagation(self, y:ArrayType, lr: float) -> None:
 
+        m = y.shape[0]
         gradients = {}
         L = len(self.layer_dims) - 1
         AL = self.cache[f'A{L}']
@@ -159,7 +161,7 @@ class NeuralNetworkClassifier:
             dZL = AL - y
 
         else:
-            error = y - AL
+            error = AL - y
             _, derivative_func = self._get_activation_functions(self.activations[-1])
             derivative_activation = derivative_func(self.cache[f'Z{L}'])
 
@@ -171,19 +173,19 @@ class NeuralNetworkClassifier:
         for l in range(L-1, 0, -1):
 
             _, derivative_func = self._get_activation_functions(self.activations[l-1])
-            prev_grads = self.xp.dot(gradients[f'dZ{l+1}'], self.parameters[f'W{l+1}'].T)
+            dA = self.xp.dot(gradients[f'dZ{l+1}'], self.parameters[f'W{l+1}'].T)
 
             if derivative_func is None:
                 raise ValueError(f"Activation '{self.activations[l-1]}' in hidden layer {l} does not support a derivative. Please choose another activation for hidden layers.")
 
-            dZL = derivative_func(self.cache[f'Z{l}']) * prev_grads
+            dZL = derivative_func(self.cache[f'Z{l}']) * dA
 
             gradients[f'dZ{l}'] = dZL
 
         # Update weights
         for l in range(1, L + 1):
 
-            dW = self.xp.dot(self.cache[f'A{l-1}'].T, gradients[f'dZ{l}'])
+            dW = self.xp.dot(self.cache[f'A{l-1}'].T, gradients[f'dZ{l}']) + (self.l2_lambda / m) * self.parameters[f'W{l}']
             dB = self.xp.sum(gradients[f'dZ{l}'], axis=0, keepdims=True)
 
             # Apply gradient clipping
@@ -237,9 +239,7 @@ class NeuralNetworkClassifier:
                 X_batch = X_shuffled[i: i+self.batch_size]
                 y_batch = y_shuffled[i: i+self.batch_size]
 
-                y_pred = self._forward_propagation(X_batch)
-                cost = self._cost(y_batch, y_pred)
-
+                self._forward_propagation(X_batch)
                 self._backward_propagation(y_batch, lr=current_lr)
 
             y_train_pred = self._forward_propagation(X)
