@@ -3,18 +3,25 @@ import pickle
 import matplotlib.pyplot as plt
 from activation_functions import *
 
+# Get the appropriate array module (NumPy or CuPy)
 xp = get_array_module()
 
+# Mapping of activation names to their function and derivative implementations.
 ACTIVATIONS = {
     "sigmoid": (sigmoid, sigmoid_derivative),
     "relu": (relu, relu_derivative),
     "leaky_relu": (leaky_relu, leaky_relu_derivative),
     "tanh": (tanh, tanh_derivative),
-    "softmax": (softmax, None),
+    "softmax": (softmax, None), # Softmax derivative is handled with cross-entropy loss.
     "linear": (linear, linear_derivative)
 }
 
 class NeuralNetworkClassifier:
+
+    """
+    A fully-connected neural network classifier with support for L2 regularization,
+    dropout, learning rate decay, and early stopping.
+    """
 
     def __init__(
         self,
@@ -50,8 +57,10 @@ class NeuralNetworkClassifier:
         self.patience = patience
         self.l2_lambda = l2_lambda
         self.dropout_prob = dropout_prob
-        self.cache = {}
+        self.cache = {} # Cache for forward propagation intermediate values.
+        self.data = {} # Training metrics data
 
+        # Set the array module to CuPy if GPU is available, otherwise default to NumPy.
         if self.use_gpu:
             try:
                 if cp.cuda.is_available():
@@ -81,13 +90,15 @@ class NeuralNetworkClassifier:
             if self.verbose:
                 print("Using CPU (forced by user).")
 
+        # Update the activation functions to use the selected backend.
         set_array_module(self.xp)
         self.xp.random.seed(seed)
 
     def _initialize_parameters(self):
 
-        parameters = {}
+        """Initialize network weights and biases using He initialization."""
 
+        parameters = {}
         L = len(self.layer_dims) - 1 # Exclude input layer
 
         for i in range(1, L + 1):
@@ -97,8 +108,14 @@ class NeuralNetworkClassifier:
         self.parameters = parameters
 
     def _cost(self, y_true: ArrayType, y_pred: ArrayType) -> float:
+
+        """
+        Compute the cross-entropy loss with L2 regularization.
+        Supports binary and multi-class classification.
+        """
+
         m = y_true.shape[0]
-        epsilon = 1e-8
+        epsilon = 1e-8 # Small constant to avoid log(0)
 
         if self.layer_dims[-1] == 1:
             cost = -self.xp.mean(
@@ -109,6 +126,7 @@ class NeuralNetworkClassifier:
         else:
             cost = -self.xp.sum(y_true * self.xp.log(y_pred + epsilon)) / m
 
+        # Compute L2 regularization cost.
         l2_cost = 0
         L = len(self.layer_dims) - 1
         for l in range(1, L + 1):
@@ -118,19 +136,28 @@ class NeuralNetworkClassifier:
         return cost
 
     def _exponential_decay(self, current_epoch: int) -> float:
+        """Apply exponential decay to the learning rate based on the current epoch."""
         return self.learning_rate * (self.decay_rate ** (current_epoch / self.decay_step))
 
     def _get_activation_functions(self, activation_name: str = "sigmoid") -> tuple:
-
+        """Retrieve the activation function and its derivative by name."""
         if activation_name not in ACTIVATIONS:
             raise ValueError(f"Unsupported activation function: {activation_name}")
 
         return ACTIVATIONS[activation_name]
 
     def _to_numpy(self, arr):
+        """
+        Convert array from GPU (CuPy) to CPU (NumPy) if necessary.
+        """
         return np.array([x.get() if hasattr(x, "get") else x for x in arr], dtype=np.float64)
 
     def _forward_propagation(self, X:ArrayType, training: bool = True) -> tuple:
+
+        """
+        Perform forward propagation through the network.
+        Applies dropout to hidden layers if specified.
+        """
 
         cache = {}
         A = X
@@ -139,33 +166,40 @@ class NeuralNetworkClassifier:
         cache['A0'] = X
 
         for l in range(1, L+1):
+            # Compute pre-activation (Z) using current layer weights and biases.
             Z = self.xp.dot(cache[f'A{l-1}'], self.parameters[f'W{l}']) + self.parameters[f'B{l}']
 
             activation_func, _ = self._get_activation_functions(self.activations[l-1])
             A = activation_func(Z)
 
+            # Apply dropout if training mode is enabled and dropout probability > 0.
             if training and self.dropout_prob > 0 and l != L:
 
-                # Dropout mask
+                # Generate dropout mask using uniform distribution.
                 D = self.xp.random.rand(*A.shape) > self.dropout_prob
                 A = A * D
-                A = A / (1.0 - self.dropout_prob) # Scale activations
+                A = A / (1.0 - self.dropout_prob) # Scale activations to maintain expected value.
                 cache[f'D{l}'] = D
 
-            cache[f'Z{l}'] = Z
-            cache[f'A{l}'] = A
+            cache[f'Z{l}'] = Z # Cache pre-activation.
+            cache[f'A{l}'] = A # Cache activation.
 
         self.cache = cache
         return cache[f'A{L}']
 
     def _backward_propagation(self, y:ArrayType, lr: float) -> None:
 
+        """
+        Perform backward propagation to compute gradients and update network weights.
+        Incorporates L2 regularization and applies gradient clipping.
+        """
+
         m = y.shape[0]
         gradients = {}
         L = len(self.layer_dims) - 1
         AL = self.cache[f'A{L}']
 
-        # For output layer
+        # Compute gradient at output layer.
         if self.activations[-1] == 'softmax':
             dZL = AL - y
 
@@ -178,7 +212,7 @@ class NeuralNetworkClassifier:
 
         gradients[f'dZ{L}'] = dZL
 
-        # For remaining layers
+        # Backpropagate through hidden layers.
         for l in range(L-1, 0, -1):
 
             _, derivative_func = self._get_activation_functions(self.activations[l-1])
@@ -187,7 +221,7 @@ class NeuralNetworkClassifier:
             if derivative_func is None:
                 raise ValueError(f"Activation '{self.activations[l-1]}' in hidden layer {l} does not support a derivative. Please choose another activation for hidden layers.")
 
-            # If dropout was applied, scale dA with same mask
+            # Scale gradients if dropout was applied during forward propagation.
             if f'D{l}' in self.cache:
                 dA = dA * self.cache[f'D{l}'] / (1.0 - self.dropout_prob)
 
@@ -195,13 +229,13 @@ class NeuralNetworkClassifier:
 
             gradients[f'dZ{l}'] = dZ
 
-        # Update weights
+        # Update network weights and biases with gradient clipping and L2 regularization.
         for l in range(1, L + 1):
 
             dW = self.xp.dot(self.cache[f'A{l-1}'].T, gradients[f'dZ{l}']) + (self.l2_lambda / m) * self.parameters[f'W{l}']
             dB = self.xp.sum(gradients[f'dZ{l}'], axis=0, keepdims=True)
 
-            # Apply gradient clipping
+            # Clip gradients to mitigate exploding gradients.
             norm_dW = self.xp.linalg.norm(dW)
             if norm_dW > self.max_norm:
                 dW = dW * (self.max_norm / norm_dW)
@@ -216,10 +250,16 @@ class NeuralNetworkClassifier:
 
     def fit(self, X:ArrayType, y:ArrayType) -> None:
 
+        """
+        Train the neural network on provided data.
+        Supports early stopping and learning rate decay.
+        """
+
         epoch_list, train_loss_list, train_acc_list, lr_list, epoch_time_list = [], [], [], [], []
         best_loss = float("inf")
         no_improve = 0
 
+        # Log device information.
         try:
             if self.xp.cuda.is_available():
                 print("Using GPU")
@@ -231,6 +271,7 @@ class NeuralNetworkClassifier:
         except AttributeError:
             print("Using CPU")
 
+        # Convert input data to the selected array type.
         X = self.xp.asarray(X)
         y = self.xp.asarray(y)
 
@@ -247,6 +288,7 @@ class NeuralNetworkClassifier:
             X_shuffled = X[permutation]
             y_shuffled = y[permutation]
 
+            # Process mini-batches.
             for i in range(0, m, self.batch_size):
 
                 X_batch = X_shuffled[i: i+self.batch_size]
@@ -255,6 +297,7 @@ class NeuralNetworkClassifier:
                 self._forward_propagation(X_batch, training=True)
                 self._backward_propagation(y_batch, lr=current_lr)
 
+            # Evaluate training loss and accuracy.
             y_train_pred = self._forward_propagation(X, training=True)
             train_loss = self._cost(y, y_train_pred)
             train_loss_list.append(train_loss)
@@ -279,7 +322,7 @@ class NeuralNetworkClassifier:
                       f"- LR: {current_lr:.6f} "
                       f"- Time: {epoch_duration:.2f}s")
 
-            # Early stopping check.
+            # Early stopping condition check.
             if self.early_stopping:
                 if train_loss < best_loss:
                     best_loss = train_loss
@@ -291,6 +334,7 @@ class NeuralNetworkClassifier:
                         print(f"Early stopping triggered at epoch {epoch}")
                     break
 
+        # Save training metrics.
         self.data = {
         "epochs": np.array(epoch_list, dtype=np.float64),
         "train_loss": self._to_numpy(train_loss_list),
@@ -300,6 +344,10 @@ class NeuralNetworkClassifier:
     }
 
     def predict(self, X:ArrayType) ->ArrayType:
+
+        """
+        Predict class labels for the input data.
+        """
 
         X = self.xp.asarray(X)
 
@@ -317,6 +365,10 @@ class NeuralNetworkClassifier:
 
     def predict_proba(self, X: ArrayType) -> ArrayType:
 
+        """
+        Predict class probabilities for the input data.
+        """
+
         X = self.xp.asarray(X)
 
         if X.shape[1] != self.layer_dims[0]:
@@ -326,10 +378,15 @@ class NeuralNetworkClassifier:
         return probabilities if self.xp is np else cp.asnumpy(probabilities)
 
     def get_training_data(self) -> dict:
+        """Return the recorded training metrics."""
         return self.data
 
     def save(self, filename: str = "model_state.pkl") -> None:
-        """Save the model state to a file."""
+
+        """
+        Save the current model state to a pickle file.
+        Excludes non-picklable attributes.
+        """
 
         state = {k: v for k, v in self.__dict__.items() if k not in ["xp", "cache", "data"]}
         with open(filename, "wb") as f:
@@ -337,7 +394,10 @@ class NeuralNetworkClassifier:
 
     @classmethod
     def load(cls, filename: str):
-        """Load the model state from a file and reinitialize unpicklable attributes."""
+
+        """
+        Load a model state from a pickle file and reinitialize non-picklable attributes.
+        """
 
         with open(filename, "rb") as f:
             state = pickle.load(f)
@@ -364,6 +424,10 @@ class NeuralNetworkClassifier:
 
 
     def plot_training_metrics(self):
+
+        """
+        Plot training metrics including loss, accuracy, learning rate decay, and epoch duration.
+        """
 
         # Ensure the training data is available
         if not hasattr(self, 'data'):
