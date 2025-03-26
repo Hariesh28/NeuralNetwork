@@ -50,6 +50,7 @@ class NeuralNetworkClassifier:
         self.patience = patience
         self.l2_lambda = l2_lambda
         self.dropout_prob = dropout_prob
+        self.cache = {}
 
         if self.use_gpu:
             try:
@@ -129,7 +130,7 @@ class NeuralNetworkClassifier:
     def _to_numpy(self, arr):
         return np.array([x.get() if hasattr(x, "get") else x for x in arr], dtype=np.float64)
 
-    def _forward_propagation(self, X:ArrayType) -> tuple:
+    def _forward_propagation(self, X:ArrayType, training: bool = True) -> tuple:
 
         cache = {}
         A = X
@@ -142,6 +143,14 @@ class NeuralNetworkClassifier:
 
             activation_func, _ = self._get_activation_functions(self.activations[l-1])
             A = activation_func(Z)
+
+            if training and self.dropout_prob > 0 and l != L:
+
+                # Dropout mask
+                D = self.xp.random.rand(*A.shape) > self.dropout_prob
+                A = A * D
+                A = A / (1.0 - self.dropout_prob) # Scale activations
+                cache[f'D{l}'] = D
 
             cache[f'Z{l}'] = Z
             cache[f'A{l}'] = A
@@ -178,9 +187,13 @@ class NeuralNetworkClassifier:
             if derivative_func is None:
                 raise ValueError(f"Activation '{self.activations[l-1]}' in hidden layer {l} does not support a derivative. Please choose another activation for hidden layers.")
 
-            dZL = derivative_func(self.cache[f'Z{l}']) * dA
+            # If dropout was applied, scale dA with same mask
+            if f'D{l}' in self.cache:
+                dA = dA * self.cache[f'D{l}'] / (1.0 - self.dropout_prob)
 
-            gradients[f'dZ{l}'] = dZL
+            dZ = derivative_func(self.cache[f'Z{l}']) * dA
+
+            gradients[f'dZ{l}'] = dZ
 
         # Update weights
         for l in range(1, L + 1):
@@ -239,10 +252,10 @@ class NeuralNetworkClassifier:
                 X_batch = X_shuffled[i: i+self.batch_size]
                 y_batch = y_shuffled[i: i+self.batch_size]
 
-                self._forward_propagation(X_batch)
+                self._forward_propagation(X_batch, training=True)
                 self._backward_propagation(y_batch, lr=current_lr)
 
-            y_train_pred = self._forward_propagation(X)
+            y_train_pred = self._forward_propagation(X, training=True)
             train_loss = self._cost(y, y_train_pred)
             train_loss_list.append(train_loss)
 
@@ -293,7 +306,7 @@ class NeuralNetworkClassifier:
         if X.shape[1] != self.layer_dims[0]:
             raise ValueError(f"Expected input with {self.layer_dims[0]} features, but got {X.shape[1]}.")
 
-        probabilities = self._forward_propagation(X)
+        probabilities = self._forward_propagation(X, training=False)
 
         if self.layer_dims[-1] == 1:
             predictions = (probabilities >= self.threshold).astype(int)
@@ -309,7 +322,7 @@ class NeuralNetworkClassifier:
         if X.shape[1] != self.layer_dims[0]:
             raise ValueError(f"Expected input with {self.layer_dims[0]} features, but got {X.shape[1]}.")
 
-        probabilities = self._forward_propagation(X)
+        probabilities = self._forward_propagation(X, training=False)
         return probabilities if self.xp is np else cp.asnumpy(probabilities)
 
     def get_training_data(self) -> dict:
