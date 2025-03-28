@@ -377,6 +377,38 @@ class NeuralNetworkClassifier:
         probabilities = self._forward_propagation(X, training=False)
         return probabilities if self.xp is np else cp.asnumpy(probabilities)
 
+    def extract_features(self, X: ArrayType, layer_index: int = None) -> ArrayType:
+
+        """
+        Extract feature representations from an intermediate layer.
+        By default, this method returns the activations from the last hidden layer (i.e. A_{L-1}).
+        You may specify a different layer by providing a valid layer index.
+
+        Parameters:
+          X: Input data.
+          layer_index: The index of the layer whose activations to extract.
+                       If None, defaults to the last hidden layer.
+
+        Returns:
+          The extracted feature representations as a NumPy array.
+        """
+
+        X = self.xp.asarray(X)
+        L = len(self.layer_dims) - 1
+
+        self._forward_propagation(X, training=False)
+
+        if layer_index is None:
+            # Default: extract from the last hidden layer.
+            layer_index = L - 1 if L >= 1 else 0
+
+        if f'A{layer_index}' not in self.cache:
+            raise ValueError("Invalid layer index provided for feature extraction.")
+
+        features = self.cache[f'A{layer_index}']
+        return features if self.xp is np else cp.asnumpy(features)
+
+
     def get_training_data(self) -> dict:
         """Return the recorded training metrics."""
         return self.data
